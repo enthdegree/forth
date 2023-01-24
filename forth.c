@@ -14,22 +14,24 @@ void donothing(void *v, ...) {}
 typedef struct forth_call_t forth_call_t;
 typedef struct forth_dict_entry_t forth_dict_entry_t;
 typedef struct forth_state_t forth_state_t;
-typedef void (*forth_primitive_t)(*forth_state_t);
+typedef void (*forth_primitive_t)(forth_state_t*);
 struct forth_dict_entry_t {
     char *name; 
     unsigned int len; // Length of defintion, or 0 if primitive
     forth_call_t *def; // List of calls
     char immediate; // Immediacy flag 
     forth_dict_entry_t *prev; // Linked list pointer
-}
+};
 enum forth_calltype {
-    PRIMITIVE = 'p', // forth_primitive_t
-    DICT_ENTRY = 'd'// forth_dict_entry_t
-    NUMBER = 'n', // double
+    PRIMITIVE, // forth_primitive_t
+    DICT_ENTRY, // forth_dict_entry_t
+    NUMBER, // double
+    ERROR, // error
 };
 struct forth_call_t {
     enum forth_calltype type; // Defines pointer type of *def
     void *def;
+    char immediate; 
 };
 // TODO: integrate the above structure in the code below
 // TODO: split usage of "forth_call_t" into "forth_dict_type" and "forth_call_t" 
@@ -54,28 +56,16 @@ struct forth_state_t {
 };
 
 void forth_search_dict(forth_state_t* s);
-static forth_call_t forth_call_search_dict = (forth_call_t) {.type = PRIMITIVE, .primitive = &forth_search_dict};
+static forth_call_t forth_call_search_dict = (forth_call_t) {.type = PRIMITIVE, .def = &forth_search_dict};
 
-void forth_call(forth_state_t *s, forth_call_t *c) {
-    switch(c->type) {
-        case NUMBER: forth_push(s, *((double *) c->def)); break; // push to stack
-        case PRIMITIVE: *((forth_primitive_t*) (c->def))(s); break; // run primitive
-        case DICT_ENTRY: // expand dictionary entry[[[
-            forth_dict_entry_t *de = (forth_dict_entry_t*) c->def;
-            s->call = realloc(s->call, (s->ncall + de->len)*sizeof(forth_call_t*));
-            memcpy(&s->call[s->ncall], de->def, de->len*sizeof(forth_call_t*));
-            s->ncall += de->len;
-            break;
-    }
-}
-void forth_cpush(forth_state_t *s, forth_call_t *c) { // Push to call stack
+void forth_cpush(forth_state_t *s, forth_call_t c) { // Push to call stack
     s->call = realloc(s->call, (++s->ncall)*sizeof(forth_call_t*));
     s->call[s->ncall-1] = c;
 } 
-forth_call_t * forth_cpop(forth_state_t *s) { 
-    if(0 == s->ncall) { printf("Call stack underflow\n"); return NULL; }
-    forth_call_t *c = s->call[--s->ncall];
-    s->call = realloc(s->call, (s->ncall)*sizeof(forth_call_t*));
+forth_call_t forth_cpop(forth_state_t *s) { 
+    if(0 == s->ncall) { printf("Call stack underflow\n"); return (forth_call_t) {ERROR,NULL}; }
+    forth_call_t c = s->call[--s->ncall];
+    s->call = realloc(s->call, (s->ncall)*sizeof(forth_call_t));
     return c;
 }
 void forth_push(forth_state_t *s, double d) { // todo: make it take a forth_call_t 
@@ -87,6 +77,20 @@ double forth_pop(forth_state_t *s) {
     double d = s->data[s->ndata-1];
     s->data = realloc(s->data, (--s->ndata)*sizeof(double));
     return d;
+}
+void forth_call(forth_state_t *s, forth_call_t c) {
+    switch(c.type) {
+        case NUMBER: forth_push(s, *((double *) c.def)); break; // push to stack
+        case PRIMITIVE: ((forth_primitive_t) (c.def))(s); break; // run primitive
+        case DICT_ENTRY: // expand dictionary entry
+            s->call = realloc(s->call, (
+                s->ncall + ((forth_dict_entry_t*) c.def)->len)*sizeof(forth_call_t*));
+            memcpy(&s->call[s->ncall], 
+                ((forth_dict_entry_t*) c.def)->def, 
+                ((forth_dict_entry_t*) c.def)->len*sizeof(forth_call_t*));
+            s->ncall += ((forth_dict_entry_t*) c.def)->len;
+            break;
+    }
 }
 void forth_colon(forth_state_t *s) { s->compile = 1; }
 void forth_semicolon(forth_state_t *s) { 
@@ -110,7 +114,7 @@ void forth_search_dict(forth_state_t *s) {
     } else if(s->dsp->prev) { // Keep looking...
         DBPRINT("SEARCH: Did not match \"%s\" with dict name \"%s\"\n", s->word, s->dsp->name);
         s->dsp = s->dsp->prev; 
-        forth_cpush(s, &forth_call_search_dict);
+        forth_cpush(s, forth_call_search_dict);
     } else { // Search failed. Maybe it's a number...
         DBPRINT("SEARCH: Exhausted dictionary.\n");
         char *endptr;
@@ -132,12 +136,12 @@ void forth_next(forth_state_t *s) {
             s->dbuff->name = s->word;
             s->word = malloc(0);
             DBPRINT("NEXT: New dictionary word: %s\n", s->dbuff->name);
-        } else forth_call(s, &forth_call_search_dict); 
+        } else forth_call(s, forth_call_search_dict); 
     } else { // Handle stack
-        forth_call_t *c = forth_cpop(s);
-        DBPRINT("NEXT: Handle call: %s (length %u; immediate %u)\n", 
-            c->name, c->len, c->immediate);
-        if(s->compile && !(s->call[s->ncall-1]->immediate)) { // Compile def
+        forth_call_t c = forth_cpop(s);
+        DBPRINT("NEXT: Handle call of type %c\n", 
+            c.type);
+        if(s->compile && !(s->call[s->ncall-1].immediate)) { // Compile def
             s->dbuff->def = realloc(s->dbuff->def, (++s->dbuff->len)*sizeof(forth_call_t*));
             s->dbuff->def[s->dbuff->len-1] = c;
         } else forth_call(s, c);
