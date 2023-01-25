@@ -15,6 +15,7 @@ typedef struct forth_call_t forth_call_t;
 typedef struct forth_dict_entry_t forth_dict_entry_t;
 typedef struct forth_state_t forth_state_t;
 typedef void (*forth_primitive_t)(forth_state_t*);
+
 struct forth_dict_entry_t {
     char *name; 
     unsigned int len; // Length of defintion, or 0 if primitive
@@ -22,22 +23,24 @@ struct forth_dict_entry_t {
     char immediate; // Immediacy flag 
     forth_dict_entry_t *prev; // Linked list pointer
 };
+#define FORTH_DICT_ENTRY_EMPTY \
+    (forth_dict_entry_t){.name=NULL, .len=0, .def=NULL, .immediate=0, .prev=NULL};
+    
 enum forth_calltype {
     PRIMITIVE, // forth_primitive_t
     DICT_ENTRY, // forth_dict_entry_t
     NUMBER, // double
     ERROR, // error
 };
+
 struct forth_call_t {
     enum forth_calltype type; // Defines pointer type of *def
     void *def;
     char immediate;
 };
-// TODO: integrate the above structure in the code below
-// TODO: split usage of "forth_call_t" into "forth_dict_type" and "forth_call_t" 
 
-#define FORTH_DICT_ENTRY_EMPTY \
-    (forth_dict_entry_t){.name=NULL, .len=0, .def=NULL, .immediate=0, .prev=NULL};
+void forth_search_dict(forth_state_t* s);
+static forth_call_t forth_call_search = (forth_call_t) {.type=PRIMITIVE, .def=&forth_search_dict, .immediate=1};
     
 struct forth_state_t {
     char *word; // Word entry buffer
@@ -56,40 +59,32 @@ struct forth_state_t {
     unsigned int ndata;
 };
 
-void forth_search_dict(forth_state_t* s);
-static forth_call_t forth_call_search = (forth_call_t) {.type=PRIMITIVE, .def=&forth_search_dict, .immediate=1};
-
 void forth_cpush(forth_state_t *s, forth_call_t c) { // Push to call stack
     s->call = realloc(s->call, (++s->ncall)*sizeof(forth_call_t));
     s->call[s->ncall-1] = c;
 } 
-forth_call_t forth_cpop(forth_state_t *s) { 
+forth_call_t forth_cpop(forth_state_t *s) { // Pop from call stack
     if(0 == s->ncall) { printf("Call stack underflow\n"); return (forth_call_t) {ERROR,NULL}; }
     forth_call_t c = s->call[--s->ncall];
     s->call = realloc(s->call, (s->ncall)*sizeof(forth_call_t));
     return c;
 }
-void forth_push(forth_state_t *s, double d) { // todo: make it take a forth_call_t 
-    s->data = realloc(s->data, (++s->ndata)*sizeof(double));
-    s->data[s->ndata-1] = d;
-}
-double forth_pop(forth_state_t *s) {
+double forth_pop(forth_state_t *s) { // Pop from data stack
     if(0 == s->ndata) { printf("Data stack underflow\n"); return -1; }
     double d = s->data[s->ndata-1];
     s->data = realloc(s->data, (--s->ndata)*sizeof(double));
     return d;
 }
+void forth_push(forth_state_t *s, double d) { // Push to data stack
+    s->data = realloc(s->data, (++s->ndata)*sizeof(double));
+    s->data[s->ndata-1] = d;
+}
 
-void forth_print(forth_state_t *s);
 void forth_call(forth_state_t *s, forth_call_t c) {
     DBPRINT("CALL: Handling call (type: %i, immediate: %u)\n", c.type, c.immediate);
     switch(c.type) {
-        case NUMBER:  // push to stack
-            forth_push(s, *((double*) c.def)); 
-            break;
-        case PRIMITIVE:  // run primitive
-            (*(forth_primitive_t)(c.def))(s); 
-            break;
+        case NUMBER: forth_push(s, *((double*) c.def)); break; // push number to data stack
+        case PRIMITIVE: (*(forth_primitive_t)(c.def))(s); break; // run primitive
         case DICT_ENTRY: // expand dictionary entry
             DBPRINT("CALL: Dict entry: %s, length: %u\n", 
                 ((forth_dict_entry_t*) c.def)->name, ((forth_dict_entry_t*) c.def)->len);
@@ -102,6 +97,7 @@ void forth_call(forth_state_t *s, forth_call_t c) {
             break;
     }
 }
+
 void forth_colon(forth_state_t *s) { s->compile = 1; }
 void forth_semicolon(forth_state_t *s) { 
     if(s->compile = 1 && s->dbuff->name) { // Add to dictionary
@@ -123,6 +119,7 @@ void forth_semicolon(forth_state_t *s) {
     s->compile = 0; 
 }
 void forth_toggle_immediate(forth_state_t *s) { s->dict_latest->immediate = !(s->dict_latest->immediate);}
+
 void forth_search_dict(forth_state_t *s) {
     if(!(s->dsp)) { s->dsp = s->dict_latest; // Starting search
         DBPRINT("SEARCH: Started search at entry %s\n", s->dsp->name);
@@ -184,16 +181,16 @@ void forth_plus(forth_state_t *s) {
     s->data = realloc(s->data, (--s->ndata)*sizeof(double));
 }
 
+#define N_INITIAL_D sizeof(forth_initial_dict)/sizeof(forth_dict_entry_t)
 #define FORTH_PRIM(x) &((forth_call_t){.type=PRIMITIVE, .def=&x, .immediate=0})
 #define FORTH_PRIM_I(x) &((forth_call_t){.type=PRIMITIVE, .def=&x, .immediate=1})
 static forth_dict_entry_t forth_initial_dict[] = { 
-    {.name="br"   , .len=1, .def=FORTH_PRIM(forth_branch)   , .immediate=0, .prev=NULL}, 
-    {.name=":"    , .len=1, .def=FORTH_PRIM(forth_colon)    , .immediate=0, .prev=NULL},  
+    {.name="br"   , .len=1, .def=FORTH_PRIM  (forth_branch)   , .immediate=0, .prev=NULL}, 
+    {.name=":"    , .len=1, .def=FORTH_PRIM  (forth_colon)    , .immediate=0, .prev=NULL},  
     {.name=";"    , .len=1, .def=FORTH_PRIM_I(forth_semicolon), .immediate=1, .prev=NULL}, 
-    {.name="print", .len=1, .def=FORTH_PRIM(forth_print)    , .immediate=0, .prev=NULL}, 
-    {.name="+"    , .len=1, .def=FORTH_PRIM(forth_plus)     , .immediate=0, .prev=NULL}
+    {.name="print", .len=1, .def=FORTH_PRIM  (forth_print)    , .immediate=0, .prev=NULL}, 
+    {.name="+"    , .len=1, .def=FORTH_PRIM  (forth_plus)     , .immediate=0, .prev=NULL}
 };
-#define N_INITIAL_D sizeof(forth_initial_dict)/sizeof(forth_dict_entry_t)
 
 forth_state_t* forth_init(void) {
     forth_state_t *s = malloc(sizeof(forth_state_t)); 
